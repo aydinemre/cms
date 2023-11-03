@@ -1,14 +1,16 @@
 import random
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Optional, Union
 
 import pandas as pd
 from sqlalchemy import Column, Integer, String, DateTime, ForeignKey
 from sqlalchemy import create_engine
-from sqlalchemy.orm import declarative_base, relationship
+from sqlalchemy.orm import declarative_base
 from sqlalchemy.orm import sessionmaker
 
-engine = create_engine("sqlite://///Users/emreaydin/PycharmProjects/cms/db/simulation.db", echo=True)
+relative_db_path = Path("db/simulation.db").absolute()
+engine = create_engine(f"sqlite:////{relative_db_path}", echo=True)
 Base = declarative_base()
 
 
