@@ -337,6 +337,9 @@ ehthumbs_vista.db
 # Recycle Bin used on file shares
 $RECYCLE.BIN/
 
+# Zip files
+*.zip
+
 # Windows Installer files
 *.cab
 *.msi

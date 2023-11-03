@@ -1,10 +1,11 @@
 import random
 from datetime import datetime, timedelta
+from typing import Optional, Union
 
 import pandas as pd
-from sqlalchemy import Column, Integer, String, DateTime
+from sqlalchemy import Column, Integer, String, DateTime, ForeignKey
 from sqlalchemy import create_engine
-from sqlalchemy.orm import declarative_base
+from sqlalchemy.orm import declarative_base, relationship
 from sqlalchemy.orm import sessionmaker
 
 engine = create_engine("sqlite://///Users/emreaydin/PycharmProjects/cms/db/simulation.db", echo=True)
@@ -120,6 +121,10 @@ class CustomerProfile(Base):
         return customer_profile
 
     @staticmethod
+    def get_profile_by_name(profile_name: str):
+        return session.query(CustomerProfile).filter(CustomerProfile.name == profile_name).first()
+
+    @staticmethod
     def get_all_profiles() -> pd.DataFrame:
         return pd.read_sql_query(f"SELECT * FROM {CustomerProfile.__tablename__}", engine)
 
@@ -131,6 +136,46 @@ class CustomerProfile(Base):
     @staticmethod
     def check_profile_name(name: str) -> bool:
         return session.query(CustomerProfile).filter(CustomerProfile.name == name).count() > 0
+
+    @staticmethod
+    def get_profile_result(
+            profile_name,
+            date=datetime.now()
+    ) -> Optional[pd.DataFrame]:
+
+        profile = session.query(CustomerProfile).filter(CustomerProfile.name == profile_name).first()
+        if profile is None:
+            return None
+        if profile.profile_type == "dinamik":
+            # Change 'now' to date
+            sql_code = profile.sql_code.replace("now", f"{date.strftime('%Y-%m-%d')}")
+            profile_result = pd.read_sql_query(sql_code, engine)
+        else:
+            profile_result = pd.read_json(profile.query_result)
+        profile_result['date'] = date
+        return profile_result
+
+    @staticmethod
+    def get_next_day_profile_result(
+            profile_name,
+            date=datetime.now()
+    ) -> Union[int, Optional[pd.DataFrame]]:
+
+        profile = session.query(CustomerProfile).filter(CustomerProfile.name == profile_name).first()
+        if profile is None or profile.profile_exclusion_period is None or profile.profile_exclusion_period == 0:
+            next_day = 0
+            next_result = None
+        else:
+            next_day = profile.profile_exclusion_period
+            next_result = pd.DataFrame()
+            for current_date in pd.date_range(date, date + timedelta(days=profile.profile_exclusion_period)):
+                current_day_df = CustomerProfile.get_profile_result(profile_name, current_date)
+                if current_day_df is None:
+                    continue
+                current_day_df['date'] = current_date
+                next_result = pd.concat([next_result, current_day_df])
+
+        return next_day, next_result
 
 
 class Campaign(Base):
@@ -157,6 +202,7 @@ class Campaign(Base):
         campaign_df['start_date'] = pd.to_datetime(campaign_df['start_date'])
         campaign_df['end_date'] = pd.to_datetime(campaign_df['end_date'])
         campaign_df = campaign_df.sort_values(by=['campaign_order', 'campaign_type', 'start_date'])
+        campaign_df = campaign_df[campaign_df['name'] != 'DoğumGünüKampanyası']
         return campaign_df
 
     @staticmethod
@@ -180,6 +226,61 @@ class Campaign(Base):
         session.add(campaign)
         session.commit()
         return campaign
+
+
+class FinalTarget(Base):
+    __tablename__ = "final_targets"
+
+    id = Column(Integer, primary_key=True)
+    customer_id = Column(Integer, ForeignKey('customers.id'))
+    customer_name = Column(String(20))
+    profile_id = Column(Integer, ForeignKey('customer_profiles.id'))
+    profile_name = Column(String(20))
+    campaign_id = Column(Integer, ForeignKey('campaigns.id'))
+    campaign_name = Column(String(20))
+    current_date = Column(DateTime)
+    start_date = Column(DateTime)
+    end_date = Column(DateTime)
+
+    @staticmethod
+    def save_final_target(final_customer_df: pd.DataFrame, campaign: pd.Series, date=datetime.now()):
+        final_customer_df['customer_id'] = final_customer_df['id']
+        final_customer_df['customer_name'] = final_customer_df['name']
+        profile = session.query(CustomerProfile).filter(CustomerProfile.name == campaign.campaign_profile).first()
+        final_customer_df['profile_id'] = profile.id
+        final_customer_df['profile_name'] = profile.name
+        final_customer_df['campaign_id'] = campaign.id
+        final_customer_df['campaign_name'] = campaign.name
+        final_customer_df['current_date'] = date
+        final_customer_df['start_date'] = final_customer_df['date']
+        if profile.schedule_day is None:
+            final_customer_df['end_date'] = final_customer_df['date'] + timedelta(days=0)
+        else:
+            final_customer_df['end_date'] = final_customer_df['date'] + timedelta(days=profile.schedule_day)
+
+        final_customer_df = final_customer_df.drop(columns=['id', 'name', 'age', 'gender',
+                                                            'city', 'birthday', 'phone', 'date',
+                                                            'sms_permission', 'push_permission'])
+        final_customer_df.to_sql(FinalTarget.__tablename__, engine, if_exists='append', index=False)
+        return pd.read_sql_query(f"SELECT * FROM {FinalTarget.__tablename__}", engine)
+
+    @staticmethod
+    def get_all_final_targets() -> pd.DataFrame:
+        final_target_df = pd.read_sql_query(f"SELECT * FROM {FinalTarget.__tablename__}", engine)
+        return final_target_df
+
+    @staticmethod
+    def get_active_targets(date) -> pd.DataFrame:
+        final_target_df = pd.read_sql(
+            session.query(FinalTarget).filter(FinalTarget.start_date <= date, FinalTarget.end_date >= date).statement,
+            session.bind
+        )
+        return final_target_df
+
+    @staticmethod
+    def clear_final_targets():
+        session.query(FinalTarget).delete()
+        session.commit()
 
 
 Base.metadata.create_all(engine)
